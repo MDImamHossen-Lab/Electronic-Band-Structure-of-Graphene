@@ -1,0 +1,178 @@
+import numpy as np
+import matplotlib.pyplot as plt
+from mpl_toolkits.mplot3d import Axes3D  # Needed for 3D plotting
+
+class GrapheneTightBinding:
+    """
+    Graphene nearest-neighbour tight-binding model.
+
+    Physics Note:
+    The lattice vectors are defined such that the y-axis points "up" along a bond.
+    """
+
+    def __init__(self, t=2.7, a=1.0):
+        """
+        t : Hopping energy (approx 2.7 - 2.8 eV for graphene)
+        a : Carbon-Carbon distance (approx 1.42 Angstroms)
+        """
+        self.t = float(t)
+        self.a = float(a)
+
+        # 1. Define Nearest-Neighbour vectors (deltas)
+        # For "vertical" alignment:
+        self.delta1 = a * np.array([0.0, -1.0])
+        self.delta2 = a * np.array([np.sqrt(3)/2.0, 0.5])
+        self.delta3 = a * np.array([-np.sqrt(3)/2.0, 0.5])
+        self.deltas = np.stack([self.delta1, self.delta2, self.delta3], axis=0)
+
+        # 2. Define High-Symmetry Points in Reciprocal Space
+        # These specific coords match the orientation of the delta vectors above.
+        self.Gamma = np.array([0.0, 0.0])
+        # K point is at x = 4pi / (3*sqrt(3)*a)
+        self.K = np.array([4*np.pi/(3*np.sqrt(3)*a), 0.0])
+        # M point
+        self.M = np.array([np.pi/(np.sqrt(3)*a), np.pi/(3*a)])
+
+    def _g_of_k(self, kx, ky):
+        """
+        Calculate the structure factor f(k) = sum(exp(i*k*delta))
+        """
+        kx = np.array(kx)
+        ky = np.array(ky)
+        kvec = np.stack([kx, ky], axis=-1)
+
+        g = np.zeros(kx.shape, dtype=complex)
+        for d in self.deltas:
+            phase = kvec[..., 0]*d[0] + kvec[..., 1]*d[1]
+            g += np.exp(1j * phase)
+        return g
+
+    def energy_dispersion(self, kx, ky):
+        """
+        Calculates Energy E(k) = ± t * |f(k)|
+        """
+        g = self._g_of_k(kx, ky)
+        mag = np.abs(g)
+        E_plus = self.t * mag
+        E_minus = -self.t * mag
+        return E_plus, E_minus
+
+    def generate_k_path(self, n_points=200):
+        """
+        Path: Gamma -> M -> K -> Gamma
+        """
+        seg1 = np.linspace(self.Gamma, self.M, n_points, endpoint=False)
+        seg2 = np.linspace(self.M, self.K, n_points, endpoint=False)
+        seg3 = np.linspace(self.K, self.Gamma, n_points, endpoint=True)
+
+        k_path = np.vstack([seg1, seg2, seg3])
+
+        # Calculate distance for plotting x-axis
+        k_dist = np.zeros(len(k_path))
+        for i in range(1, len(k_path)):
+            k_dist[i] = k_dist[i-1] + np.linalg.norm(k_path[i] - k_path[i-1])
+
+        ticks = [0, k_dist[len(seg1)-1], k_dist[len(seg1)+len(seg2)-1], k_dist[-1]]
+        labels = ['$\Gamma$', 'M', 'K', '$\Gamma$']
+        return k_path, k_dist, labels, ticks
+
+    def plot_band_structure(self):
+        k_path, k_dist, labels, ticks = self.generate_k_path(n_points=300)
+        E_plus, E_minus = self.energy_dispersion(k_path[:, 0], k_path[:, 1])
+
+        plt.figure(figsize=(10, 6))
+        plt.plot(k_dist, E_plus, 'r-', lw=2, label='$\pi^*$ Conduction')
+        plt.plot(k_dist, E_minus, 'b-', lw=2, label='$\pi$ Valence')
+
+        for t_val in ticks:
+            plt.axvline(t_val, color='k', ls='--', alpha=0.3)
+        plt.axhline(0.0, color='k', ls=':', alpha=0.5)
+
+        plt.xticks(ticks, labels, fontsize=12)
+        plt.ylabel('Energy (eV)', fontsize=12)
+        plt.title(f'Graphene Band Structure (t={self.t} eV)', fontsize=14)
+        plt.ylim(-3.5*self.t, 3.5*self.t)
+        plt.legend()
+        plt.grid(alpha=0.1)
+        plt.tight_layout()
+        plt.show()
+
+    def plot_3d_dirac_cone(self, k_range=0.5):
+        """
+        Zooms in on the K point to show the linear dispersion (cone).
+        """
+        n_points = 200
+        kx = np.linspace(self.K[0] - k_range, self.K[0] + k_range, n_points)
+        ky = np.linspace(self.K[1] - k_range, self.K[1] + k_range, n_points)
+        KX, KY = np.meshgrid(kx, ky)
+
+        E_plus, _ = self.energy_dispersion(KX, KY)
+
+        fig = plt.figure(figsize=(10, 7))
+        ax = fig.add_subplot(111, projection='3d')
+        surf = ax.plot_surface(KX, KY, E_plus, cmap='viridis',
+                               edgecolor='none', alpha=0.9)
+
+        ax.set_title('Dirac Cone (Conduction Band)', fontsize=14)
+        ax.set_xlabel('$k_x$')
+        ax.set_ylabel('$k_y$')
+        ax.set_zlabel('Energy (eV)')
+        fig.colorbar(surf, ax=ax, shrink=0.5, aspect=10)
+        plt.tight_layout()
+        plt.show()
+
+    def plot_dos(self, n_kpoints=800, n_bins=300):
+        """
+        Calculates Density of States by sampling the Brillouin Zone.
+        FIX: Range increased to cover K points.
+        """
+        # The K point x-coordinate is approx 2.41 / a.
+        # We set bounds to cover the hexagon comfortably.
+        kx_limit = 3.0 / self.a
+        ky_limit = 3.0 / self.a
+
+        kx = np.linspace(-kx_limit, kx_limit, n_kpoints)
+        ky = np.linspace(-ky_limit, ky_limit, n_kpoints)
+        KX, KY = np.meshgrid(kx, ky)
+
+        E_plus, E_minus = self.energy_dispersion(KX, KY)
+        all_energies = np.hstack([E_plus.ravel(), E_minus.ravel()])
+
+        # Calculate Histogram
+        dos, edges = np.histogram(all_energies, bins=n_bins, density=True)
+        energies = 0.5 * (edges[:-1] + edges[1:])
+
+        plt.figure(figsize=(8, 5))
+        plt.plot(energies, dos, 'k-', lw=1.5)
+        plt.fill_between(energies, dos, color='gray', alpha=0.2)
+
+        plt.axvline(0.0, color='r', ls='--', label='Fermi Level')
+        plt.xlabel('Energy (eV)', fontsize=12)
+        plt.ylabel('Density of States (arb. units)', fontsize=12)
+        plt.title('Graphene Density of States', fontsize=14)
+        plt.xlim(-3.2*self.t, 3.2*self.t)
+        plt.legend()
+        plt.grid(alpha=0.2)
+        plt.tight_layout()
+        plt.show()
+
+# ---------- Main Execution ----------
+if __name__ == "__main__":
+    # Initialize Model
+    graphene = GrapheneTightBinding(t=2.7, a=1.0)
+
+    print("1. Plotting Band Structure along Gamma-M-K-Gamma...")
+    graphene.plot_band_structure()
+
+    print("2. Plotting 3D Dirac Cone...")
+    graphene.plot_3d_dirac_cone(k_range=0.5)
+
+    print("3. Calculating Density of States (Corrected Range)...")
+    graphene.plot_dos()
+
+    # Verification print
+    print("\n=== Verification ===")
+    E_K_plus, E_K_minus = graphene.energy_dispersion(graphene.K[0], graphene.K[1])
+    gap = E_K_plus - E_K_minus
+    print(f"Energy Gap at K point: {gap:.6f} eV (Expected: 0.0)")
+    print(f"Total Bandwidth: ~{6*graphene.t:.2f} eV (From -3t to +3t)")
